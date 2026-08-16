@@ -14,7 +14,8 @@ button{font:inherit;cursor:pointer;border-radius:9px;padding:10px 14px}.primary{
 .hint,.small{font-size:13px;color:#666}.hint{margin-top:6px}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.stat{border:1px solid #d8dce3;border-radius:10px;padding:12px;background:#fafbfc}.stat .k{font-size:12px;color:#666}.stat .v{font-size:21px;font-weight:700;margin-top:4px}
 .condition{border:1px solid #d8dce3;border-radius:10px;padding:12px;margin-bottom:9px;background:#fcfcfd}.remove{white-space:nowrap}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.success,.warning,.error{border-radius:10px;padding:12px;line-height:1.6;margin-top:12px}.success{background:#f0f8f2;border:1px solid #b8d9bf}.warning{background:#fff7df;border:1px solid #ead58b}.error{background:#fff0f0;border:1px solid #e4a6a6}
-.timeline{display:flex;overflow-x:auto;border:1px solid #d8dce3;border-radius:10px}.seg{min-width:50px;flex:1 0 50px;padding:7px 4px;text-align:center;font-size:11px;border-right:1px solid rgba(0,0,0,.08)}.seg:last-child{border:0}.play{background:#dff2e3}.rest{background:#e2eefb}.fixed-play{outline:2px solid #68a873;outline-offset:-2px}.fixed-rest{outline:2px solid #5e8fc7;outline-offset:-2px}.seg .time{font-weight:700}.seg .g{margin-top:4px;color:#555}
+.timeline{display:flex;flex-direction:column;gap:12px}.timelineChunk{border:1px solid #d8dce3;border-radius:10px;overflow:hidden}.timelineChunkHeader{padding:8px 10px;background:#fafbfc;font-weight:700;font-size:13px}.timelineRow{display:grid;grid-template-columns:repeat(24,minmax(0,1fr))}.seg{min-width:0;padding:7px 2px;text-align:center;font-size:11px;border-right:1px solid rgba(0,0,0,.08)}.seg:last-child{border:0}.play{background:#dff2e3}.rest{background:#e2eefb}.fixed-play{outline:2px solid #68a873;outline-offset:-2px}.fixed-rest{outline:2px solid #5e8fc7;outline-offset:-2px}.seg .time{font-weight:700}.seg .g{margin-top:4px;color:#555}
+@media(max-width:760px){.timelineRow{grid-template-columns:repeat(12,minmax(0,1fr))}.seg{font-size:10px;padding:6px 1px}.seg .time{font-size:9px}}
 table{width:100%;border-collapse:collapse;font-size:14px}th,td{border-bottom:1px solid #d8dce3;padding:8px 6px;text-align:left}th{background:#fafbfc}
 @media(max-width:760px){.grid,.row{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr}}
 </style>
@@ -47,6 +48,18 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{border-bottom:1px
 <input id="currentGauge" type="number" min="0" max="100" step="0.1" value="">
 <div class="hint">イベント開始前なら開始時刻・開始時ゲージ、イベント中なら現在時刻・現在ゲージを入力します。</div>
 <div class="hint">終了時ゲージは100%になる前提です。</div>
+<div style="margin-top:12px">
+<label>100%・0%の到達を避ける</label>
+<div style="display:flex;gap:16px;flex-wrap:wrap">
+<label style="font-weight:400;display:flex;align-items:center;gap:5px">
+<input type="radio" name="avoidEdges" value="yes" checked style="width:auto"> 避ける
+</label>
+<label style="font-weight:400;display:flex;align-items:center;gap:5px">
+<input type="radio" name="avoidEdges" value="no" style="width:auto"> 避けない
+</label>
+</div>
+<div class="hint">「避ける」を選ぶと、最後以外はなるべく100%・0%にならないようにします。</div>
+</div>
 </div>
 </section>
 
@@ -182,20 +195,45 @@ function calculate(){
   const SCALE=10000,pd=Math.round(PLAY_RATE*STEP*SCALE),rd=Math.round(REST_RATE*STEP*SCALE),startG=Math.round(g0*SCALE);
   let states=new Map([[startG+"|start",{score:0,switches:0,g:startG,last:"start",prev:null,act:null}]]);
   function better(a,b){return !b||a.score>b.score||(a.score===b.score&&a.switches<b.switches)}
+  const avoidEdges=document.querySelector('input[name="avoidEdges"]:checked')?.value==="yes";
+
   for(let k=0;k<N;k++){
     const next=new Map();
     for(const st of states.values())for(const act of ["play","rest"]){
       if(fp[k]&&act!=="play"||fr[k]&&act!=="rest")continue;
       if(act==="play"&&st.g>=SCALE*100)continue;
-      const ng=act==="play"?Math.min(SCALE*100,st.g+pd):Math.max(0,st.g-rd);
-      const cand={score:st.score+(act==="play"?1:0),switches:st.switches+(st.last!=="start"&&st.last!==act?1:0),g:ng,last:act,prev:st,act};
-      const key=ng+"|"+act;if(better(cand,next.get(key)))next.set(key,cand);
+
+      const ng=act==="play"
+        ?Math.min(SCALE*100,st.g+pd)
+        :Math.max(0,st.g-rd);
+
+      const isLast=k===N-1;
+      const hitsEdge=!isLast&&(ng===0||ng===SCALE*100);
+      const edgePenalty=avoidEdges&&hitsEdge?1000000:0;
+
+      const cand={
+        score:st.score+(act==="play"?1:0)-edgePenalty,
+        switches:st.switches+(st.last!=="start"&&st.last!==act?1:0),
+        g:ng,last:act,prev:st,act
+      };
+      const key=ng+"|"+act;
+      if(better(cand,next.get(key)))next.set(key,cand);
     }
     states=next;
   }
+
   let best=null;
-  for(const st of states.values())if(Math.abs(st.g-SCALE*100)<=Math.round(.03*SCALE)&&better(st,best))best=st;
-  if(!best)for(const st of states.values())if(!best||st.score>best.score||(st.score===best.score&&(st.switches<best.switches||st.switches===best.switches&&Math.abs(st.g-SCALE*100)<Math.abs(best.g-SCALE*100))))best=st;
+  for(const st of states.values())
+    if(Math.abs(st.g-SCALE*100)<=Math.round(.03*SCALE)&&better(st,best))best=st;
+  if(!best)
+    for(const st of states.values())
+      if(!best||st.score>best.score||
+        (st.score===best.score&&(
+          st.switches<best.switches||
+          (st.switches===best.switches&&
+           Math.abs(st.g-SCALE*100)<Math.abs(best.g-SCALE*100)
+          )
+        )))best=st;
   if(!best){msg.innerHTML='<div class="error">指定条件では実行可能なプランがありません。</div>';return}
 
   const actions=Array(N);let cur=best;for(let k=N-1;k>=0;k--){actions[k]=cur.act;cur=cur.prev}
@@ -206,7 +244,25 @@ function calculate(){
 }
 function renderTimeline(a,fp,fr,g0){
   const box=$("timeline");box.innerHTML="";let g=g0;
-  a.forEach((act,k)=>{const before=g;g=Math.max(0,Math.min(100,g+(act==="play"?PLAY_RATE:-REST_RATE)*STEP));const d=document.createElement("div");d.className=`seg ${act==="play"?"play":"rest"}${fp[k]?" fixed-play":""}${fr[k]?" fixed-rest":""}`;d.innerHTML=`<div class="time">${scheduleLabel(k*STEP)}</div><div>${act==="play"?"ライブ":"休憩"}</div><div class="g">${g.toFixed(1)}%</div>`;d.title=`${scheduleLabel(k*STEP)}〜${scheduleLabel((k+1)*STEP)} / ${before.toFixed(1)}%→${g.toFixed(1)}%`;box.appendChild(d)});
+  // 12時間ごとにタイムラインを分割して縦に積む（スマホでも見やすくする）
+  const CHUNK=24; // 30分×24 = 12時間
+  for(let base=0;base<a.length;base+=CHUNK){
+    const wrap=document.createElement("div");wrap.className="timelineChunk";
+    const header=document.createElement("div");header.className="timelineChunkHeader";
+    header.textContent=`${scheduleLabel(base*STEP)}〜${scheduleLabel(Math.min(base+CHUNK,a.length)*STEP)}`;
+    wrap.appendChild(header);
+    const row=document.createElement("div");row.className="timelineRow";
+    for(let k=base;k<Math.min(base+CHUNK,a.length);k++){
+      const act=a[k],before=g;
+      g=Math.max(0,Math.min(100,g+(act==="play"?PLAY_RATE:-REST_RATE)*STEP));
+      const d=document.createElement("div");
+      d.className=`seg ${act==="play"?"play":"rest"}${fp[k]?" fixed-play":""}${fr[k]?" fixed-rest":""}`;
+      d.innerHTML=`<div class="time">${scheduleLabel(k*STEP)}</div><div>${act==="play"?"ライブ":"休憩"}</div><div class="g">${g.toFixed(1)}%</div>`;
+      d.title=`${scheduleLabel(k*STEP)}〜${scheduleLabel((k+1)*STEP)} / ${before.toFixed(1)}%→${g.toFixed(1)}%`;
+      row.appendChild(d);
+    }
+    wrap.appendChild(row);box.appendChild(wrap);
+  }
 }
 function renderTable(a,fp,fr){
   const rows=[];let k=0;while(k<a.length){const act=a[k],p=fp[k],r=fr[k];let j=k+1;while(j<a.length&&a[j]===act&&fp[j]===p&&fr[j]===r)j++;rows.push(`<tr><td>${scheduleLabel(k*STEP)}</td><td>${scheduleLabel(j*STEP)}</td><td>${fmtDuration((j-k)*STEP)}</td><td>${act==="play"?"ライブ":"休憩"}</td><td>${p?"絶対プレイ":r?"絶対休憩":"自由時間"}</td></tr>`);k=j}
