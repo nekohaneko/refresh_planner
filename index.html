@@ -14,7 +14,7 @@ button{font:inherit;cursor:pointer;border-radius:9px;padding:10px 14px}.primary{
 .hint,.small{font-size:13px;color:#666}.hint{margin-top:6px}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.stat{border:1px solid #d8dce3;border-radius:10px;padding:12px;background:#fafbfc}.stat .k{font-size:12px;color:#666}.stat .v{font-size:21px;font-weight:700;margin-top:4px}
 .condition{border:1px solid #d8dce3;border-radius:10px;padding:12px;margin-bottom:9px;background:#fcfcfd}.remove{white-space:nowrap}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.success,.warning,.error{border-radius:10px;padding:12px;line-height:1.6;margin-top:12px}.success{background:#f0f8f2;border:1px solid #b8d9bf}.warning{background:#fff7df;border:1px solid #ead58b}.error{background:#fff0f0;border:1px solid #e4a6a6}
-.timeline{display:flex;flex-direction:column;gap:12px}.timelineChunk{border:1px solid #d8dce3;border-radius:10px;overflow:hidden}.timelineChunkHeader{padding:8px 10px;background:#fafbfc;font-weight:700;font-size:13px}.timelineRow{display:grid;grid-template-columns:repeat(24,minmax(0,1fr))}.seg{min-width:0;padding:7px 2px;text-align:center;font-size:11px;border-right:1px solid rgba(0,0,0,.08)}.seg:last-child{border:0}.play{background:#dff2e3}.rest{background:#e2eefb}.fixed-play{outline:2px solid #68a873;outline-offset:-2px}.fixed-rest{outline:2px solid #5e8fc7;outline-offset:-2px}.seg .time{font-weight:700}.seg .g{margin-top:4px;color:#555}
+.timeline{display:flex;flex-direction:column;gap:12px}.timelineChunk{border:1px solid #d8dce3;border-radius:10px;overflow:hidden}.timelineChunkHeader{padding:8px 10px;background:#fafbfc;font-weight:700;font-size:13px}.timelineRow{display:grid;grid-template-columns:repeat(24,minmax(0,1fr))}.seg{min-width:0;padding:7px 2px;text-align:center;font-size:11px;border-right:1px solid rgba(0,0,0,.08)}.seg:last-child{border:0}.play{background:#dff2e3}.rest{background:#e2eefb}.fixed-play{outline:2px solid #68a873;outline-offset:-2px}.fixed-rest{outline:2px solid #5e8fc7;outline-offset:-2px}.editable{cursor:pointer;user-select:none}.editable:hover{filter:brightness(.97)}.gauge-over{outline:3px solid #d33b3b!important;outline-offset:-3px}.gauge-under{outline:3px solid #d33b3b!important;outline-offset:-3px}.edit-note{font-size:13px;color:#666;margin:8px 0}.warning-list{margin:8px 0 0;padding-left:20px}.seg .time{font-weight:700}.seg .g{margin-top:4px;color:#555}
 @media(max-width:760px){.timelineRow{grid-template-columns:repeat(12,minmax(0,1fr))}.seg{font-size:10px;padding:6px 1px}.seg .time{font-size:9px}}
 table{width:100%;border-collapse:collapse;font-size:14px}th,td{border-bottom:1px solid #d8dce3;padding:8px 6px;text-align:left}th{background:#fafbfc}
 @media(max-width:760px){.grid,.row{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr}}
@@ -82,7 +82,10 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{border-bottom:1px
 <section class="card full" id="resultCard" hidden>
 <h2>おすすめプラン</h2>
 <div class="stats"><div class="stat"><div class="k">実際のプレイ時間</div><div class="v" id="actualPlay">-</div></div><div class="stat"><div class="k">実際の休憩時間</div><div class="v" id="actualRest">-</div></div><div class="stat"><div class="k">自由時間でのプレイ</div><div class="v" id="freePlay">-</div></div></div>
-<h3>タイムライン</h3><div id="timeline" class="timeline"></div>
+<h3>タイムライン</h3>
+<div class="edit-note">タイムラインの「ライブ」「休憩」をクリックすると、その30分を切り替えられます。変更するとゲージを再計算します。</div>
+<div id="timelineWarnings"></div>
+<div id="timeline" class="timeline"></div>
 <h3>タイムスケジュール</h3><div id="scheduleTable"></div>
 </section>
 </div>
@@ -135,7 +138,7 @@ function optionList(){
 function addCondition(type,sv="",ev=""){
   const box=type==="play"?$("playConditions"):$("restConditions"),d=document.createElement("div");d.className="condition";
   d.innerHTML=`<div class="row"><div><label>開始日時</label><select class="c-start">${optionList()}</select></div><div><label>終了日時</label><select class="c-end">${optionList()}</select></div><button type="button" class="secondary remove">削除</button></div>`;
-  box.appendChild(d);d.querySelector(".c-start").value=sv;d.querySelector(".c-end").value=ev;d.querySelector(".remove").onclick=()=>d.remove();
+  box.appendChild(d);d.querySelector(".c-start").value=sv;d.querySelector(".c-end").value=ev;d.querySelector(".remove").onclick=()=>{d.remove();saveInputs();};
 }
 function refreshConditions(){
   document.querySelectorAll(".condition").forEach(row=>{
@@ -223,25 +226,117 @@ function calculate(){
   }
 
   let best=null;
-  for(const st of states.values())
-    if(Math.abs(st.g-SCALE*100)<=Math.round(.03*SCALE)&&better(st,best))best=st;
-  if(!best)
-    for(const st of states.values())
-      if(!best||st.score>best.score||
-        (st.score===best.score&&(
-          st.switches<best.switches||
-          (st.switches===best.switches&&
-           Math.abs(st.g-SCALE*100)<Math.abs(best.g-SCALE*100)
-          )
-        )))best=st;
+  // 終了時ゲージを100%に近づけることは最適化条件にしない。
+  // 基準時ゲージが0%以外でも、最後だけ無理に100%へ合わせるために
+  // 途中のライブ／休憩が不自然になることを防ぐ。
+  for(const st of states.values()){
+    if(!best || better(st,best)) best=st;
+  }
   if(!best){msg.innerHTML='<div class="error">指定条件では実行可能なプランがありません。</div>';return}
 
   const actions=Array(N);let cur=best;for(let k=N-1;k>=0;k--){actions[k]=cur.act;cur=cur.prev}
   const plays=actions.filter(x=>x==="play").length,rests=N-plays,fixed=fp.filter(Boolean).length,free=Math.max(0,plays-fixed);
   $("actualPlay").textContent=fmtHours(plays*STEP);$("actualRest").textContent=fmtHours(rests*STEP);$("freePlay").textContent=fmtHours(free*STEP);
   msg.innerHTML=`<div class="success">条件を満たすプランです。プレイ⇔休憩の切り替え回数：${best.switches}回。</div>`;
-  renderTimeline(actions,fp,fr,g0);renderTable(actions,fp,fr);$("resultCard").hidden=false;
+  renderTimeline(actions,fp,fr,g0);
+  // 計算後はタイムラインを直接編集できるようにする。
+  updateEditedTimeline(actions,fp,fr,g0);
+  renderTable(actions,fp,fr);
+  $("resultCard").hidden=false;
 }
+function renderTimelineWarnings(warnings){
+  const box=$("timelineWarnings");
+  if(!box)return;
+  if(!warnings.length){
+    box.innerHTML='<div class="success">ゲージは0〜100%の範囲内です。</div>';
+    return;
+  }
+  box.innerHTML='<div class="error"><strong>ゲージの警告</strong><ul class="warning-list">'+
+    warnings.map(w=>`<li>${w}</li>`).join("")+
+    '</ul></div>';
+}
+
+function updateEditedTimeline(actions,fp,fr,g0){
+  const box=$("timeline");
+  box.innerHTML="";
+  let g=g0;
+  const warnings=[];
+  const CHUNK=24;
+
+  // 最後の30分枠の終了時ゲージが100%でない場合も警告する。
+  // 通常の0%未満・100%超過警告とは別に、終了時点の未到達を知らせる。
+  for(let base=0;base<actions.length;base+=CHUNK){
+    const wrap=document.createElement("div");
+    wrap.className="timelineChunk";
+    const header=document.createElement("div");
+    header.className="timelineChunkHeader";
+    header.textContent=`${scheduleLabel(base*STEP)}〜${scheduleLabel(Math.min(base+CHUNK,actions.length)*STEP)}`;
+    wrap.appendChild(header);
+
+    const row=document.createElement("div");
+    row.className="timelineRow";
+
+    for(let k=base;k<Math.min(base+CHUNK,actions.length);k++){
+      const act=actions[k];
+      const before=g;
+      g=g+(act==="play"?PLAY_RATE:-REST_RATE)*STEP;
+
+      const d=document.createElement("div");
+      let cls=`seg ${act==="play"?"play":"rest"}`;
+      if(fp[k])cls+=" fixed-play";
+      if(fr[k])cls+=" fixed-rest";
+      if(!fp[k]&&!fr[k])cls+=" editable";
+
+      if(g>100+1e-9){
+        cls+=" gauge-over";
+        warnings.push(`${scheduleLabel(k*STEP)}〜${scheduleLabel((k+1)*STEP)}でゲージが100%を超えます（${g.toFixed(1)}%）。`);
+      }
+      if(g<-1e-9){
+        cls+=" gauge-under";
+        warnings.push(`${scheduleLabel(k*STEP)}〜${scheduleLabel((k+1)*STEP)}でゲージが0%を下回ります（${g.toFixed(1)}%）。`);
+      }
+
+      d.className=cls;
+      d.innerHTML=`<div class="time">${scheduleLabel(k*STEP)}</div><div>${act==="play"?"ライブ":"休憩"}</div><div class="g">${g.toFixed(1)}%</div>`;
+      d.title=`${scheduleLabel(k*STEP)}〜${scheduleLabel((k+1)*STEP)} / ${before.toFixed(1)}%→${g.toFixed(1)}%`;
+      d.dataset.index=k;
+
+      if(!fp[k]&&!fr[k]){
+        d.addEventListener("click",()=>{
+          actions[k]=actions[k]==="play"?"rest":"play";
+          updateEditedTimeline(actions,fp,fr,g0);
+          updateEditedSummary(actions,fp);
+          renderTable(actions,fp,fr);
+          saveInputs();
+        });
+      }
+
+      row.appendChild(d);
+    }
+    wrap.appendChild(row);
+    box.appendChild(wrap);
+  }
+
+  const finalGauge = g;
+  if(Math.abs(finalGauge-100)>0.001){
+    const finalStart = scheduleLabel((actions.length-1)*STEP);
+    const finalEnd = scheduleLabel(actions.length*STEP);
+    warnings.push(`${finalStart}〜${finalEnd}でゲージが100%ではありません（${finalGauge.toFixed(1)}%）。`);
+  }
+
+  renderTimelineWarnings(warnings);
+}
+
+function updateEditedSummary(actions,fp){
+  const plays=actions.filter(x=>x==="play").length;
+  const rests=actions.length-plays;
+  const fixed=fp.filter(Boolean).length;
+  const free=Math.max(0,plays-fixed);
+  $("actualPlay").textContent=fmtHours(plays*STEP);
+  $("actualRest").textContent=fmtHours(rests*STEP);
+  $("freePlay").textContent=fmtHours(free*STEP);
+}
+
 function renderTimeline(a,fp,fr,g0){
   const box=$("timeline");box.innerHTML="";let g=g0;
   // 12時間ごとにタイムラインを分割して縦に積む（スマホでも見やすくする）
@@ -268,20 +363,68 @@ function renderTable(a,fp,fr){
   const rows=[];let k=0;while(k<a.length){const act=a[k],p=fp[k],r=fr[k];let j=k+1;while(j<a.length&&a[j]===act&&fp[j]===p&&fr[j]===r)j++;rows.push(`<tr><td>${scheduleLabel(k*STEP)}</td><td>${scheduleLabel(j*STEP)}</td><td>${fmtDuration((j-k)*STEP)}</td><td>${act==="play"?"ライブ":"休憩"}</td><td>${p?"絶対プレイ":r?"絶対休憩":"自由時間"}</td></tr>`);k=j}
   $("scheduleTable").innerHTML=`<table><thead><tr><th>開始</th><th>終了</th><th>連続時間</th><th>行動</th><th>区分</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
 }
+
+const STORAGE_KEY="refreshPlannerInputs_v1";
+
+function saveInputs(){
+  const data={
+    startDay:$("startDay").value,
+    startTime:$("startTime").value,
+    endDay:$("endDay").value,
+    endTime:$("endTime").value,
+    eventYear:$("eventYear").value,
+    eventMonth:$("eventMonth").value,
+    currentGauge:$("currentGauge").value,
+    avoidEdges:document.querySelector('input[name="avoidEdges"]:checked')?.value||"yes",
+    playConditions:getConds("play"),
+    restConditions:getConds("rest")
+  };
+  try{localStorage.setItem(STORAGE_KEY,JSON.stringify(data));}catch(e){}
+}
+
+function loadInputs(){
+  let data=null;
+  try{data=JSON.parse(localStorage.getItem(STORAGE_KEY)||"null");}catch(e){}
+  if(!data)return;
+
+  for(const id of ["startDay","startTime","endDay","endTime","eventYear","eventMonth"]){
+    if(data[id]!==undefined) $(id).value=String(data[id]);
+  }
+  if(data.currentGauge!==undefined) $("currentGauge").value=data.currentGauge;
+
+  if(data.avoidEdges){
+    const radio=document.querySelector(`input[name="avoidEdges"][value="${data.avoidEdges}"]`);
+    if(radio)radio.checked=true;
+  }
+
+  $("playConditions").innerHTML="";
+  $("restConditions").innerHTML="";
+  for(const c of (data.playConditions||[])) addCondition("play",c.s,c.e);
+  for(const c of (data.restConditions||[])) addCondition("rest",c.s,c.e);
+  refreshConditions();
+}
+
+function clearSavedInputs(){
+  try{localStorage.removeItem(STORAGE_KEY);}catch(e){}
+}
+
 function resetAll(){
+  clearSavedInputs();
   initControls();$("playConditions").innerHTML="";$("restConditions").innerHTML="";
   $("messages").innerHTML="";$("resultCard").hidden=true;$("timeline").innerHTML="";$("scheduleTable").innerHTML="";updateTheory();
 }
 
 function wire(){
-  initControls();updateTheory();
-  ["startDay","startTime","endDay","endTime","eventYear","eventMonth"].forEach(id=>$(id).addEventListener("change",()=>{refreshConditions();updateTheory()}));
-  $("currentGauge").addEventListener("input",updateTheory);
-  $("currentGauge").addEventListener("change",updateTheory);
-  $("calcBtn").addEventListener("click",calculate);$("resetBtn").addEventListener("click",resetAll);$("addPlay").addEventListener("click",()=>addCondition("play"));$("addRest").addEventListener("click",()=>addCondition("rest"));
+  initControls();loadInputs();updateTheory();
+  ["startDay","startTime","endDay","endTime","eventYear","eventMonth"].forEach(id=>$(id).addEventListener("change",()=>{refreshConditions();updateTheory();saveInputs();}));
+  $("currentGauge").addEventListener("input",()=>{updateTheory();saveInputs();});
+  $("currentGauge").addEventListener("change",()=>{updateTheory();saveInputs();});
+  document.querySelectorAll('input[name="avoidEdges"]').forEach(r=>r.addEventListener("change",saveInputs));
+  $("calcBtn").addEventListener("click",()=>{saveInputs();calculate();});$("resetBtn").addEventListener("click",resetAll);$("addPlay").addEventListener("click",()=>{addCondition("play");saveInputs();});$("addRest").addEventListener("click",()=>{addCondition("rest");saveInputs();});
   $("dateDetailsBtn").addEventListener("click",()=>{$("dateDetails").hidden=!$("dateDetails").hidden});
-  $("nowBtn").addEventListener("click",()=>{const n=new Date();$("startDay").value=n.getDate();$("startTime").value=`${pad(n.getHours())}:${n.getMinutes()<30?"00":"30"}`;updateTheory();refreshConditions()});
+  $("nowBtn").addEventListener("click",()=>{const n=new Date();$("startDay").value=n.getDate();$("startTime").value=`${pad(n.getHours())}:${n.getMinutes()<30?"00":"30"}`;updateTheory();refreshConditions();saveInputs();});
 }
 wire();
+
 </script>
 </body></html>
